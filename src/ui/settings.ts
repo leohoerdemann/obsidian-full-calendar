@@ -27,6 +27,7 @@ export interface FullCalendarSettings {
     };
     timeFormat24h: boolean;
     clickToCreateEventFromMonthView: boolean;
+    tagColors: { tag: string; color: string }[];
 }
 
 export const DEFAULT_SETTINGS: FullCalendarSettings = {
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: FullCalendarSettings = {
     },
     timeFormat24h: false,
     clickToCreateEventFromMonthView: true,
+    tagColors: [],
 };
 
 const WEEKDAYS = [
@@ -243,6 +245,46 @@ export class FullCalendarSettingTab extends PluginSettingTab {
                 toggle.onChange(async (val) => {
                     this.plugin.settings.clickToCreateEventFromMonthView = val;
                     await this.plugin.saveSettings();
+                });
+            });
+
+        // Tag color mapping UI
+        containerEl.createEl("h2", { text: "Tag Colors" });
+        this.plugin.settings.tagColors.forEach((tagColor, idx) => {
+            new Setting(containerEl)
+                .setName(`Tag: ${tagColor.tag}`)
+                .addText((text) => {
+                    text.setValue(tagColor.tag);
+                    text.onChange(async (val) => {
+                        this.plugin.settings.tagColors[idx].tag = val;
+                        await this.plugin.saveSettings();
+                    });
+                })
+                .addColorPicker((picker) => {
+                    picker.setValue(tagColor.color);
+                    picker.onChange(async (val) => {
+                        this.plugin.settings.tagColors[idx].color = val;
+                        await this.plugin.saveSettings();
+                    });
+                })
+                .addExtraButton((btn) => {
+                    btn.setIcon("trash");
+                    btn.setTooltip("Delete Tag Color");
+                    btn.onClick(async () => {
+                        this.plugin.settings.tagColors.splice(idx, 1);
+                        await this.plugin.saveSettings();
+                        await this.display();
+                    });
+                });
+        });
+        new Setting(containerEl)
+            .setName("Add Tag Color")
+            .addButton((btn) => {
+                btn.setButtonText("Add");
+                btn.onClick(async () => {
+                    this.plugin.settings.tagColors.push({ tag: "", color: "#ffffff" });
+                    await this.plugin.saveSettings();
+                    await this.display();
                 });
             });
 

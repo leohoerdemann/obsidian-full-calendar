@@ -20,6 +20,7 @@ import { ObsidianInterface } from "../ObsidianAdapter";
 import { OFCEvent, EventLocation, CalendarInfo, validateEvent } from "../types";
 import { EventResponse } from "./Calendar";
 import { EditableCalendar, EditableEventResponse } from "./EditableCalendar";
+import { getEmojiForTime } from "../ui/tasks/emojiTime";
 
 const DATE_FORMAT = "YYYY-MM-DD";
 
@@ -161,7 +162,7 @@ const makeListItem = (
     if (data.type !== "single") {
         throw new Error("Can only pass in single event.");
     }
-    const { completed, title } = data;
+    const { completed, title, startTime, endTime } = data;
     const checkbox = (() => {
         if (completed !== null && completed !== undefined) {
             return `[${completed ? "x" : " "}]`;
@@ -169,11 +170,22 @@ const makeListItem = (
         return null;
     })();
 
+    // Emoji time formatting
+    let timeStr = "";
+    if (startTime) {
+        timeStr += getEmojiForTime(startTime) + " " + startTime;
+    }
+    if (endTime) {
+        timeStr += " - " + getEmojiForTime(endTime) + " " + endTime;
+    }
+
     const attrs: Partial<OFCEvent> = { ...data };
     delete attrs["completed"];
     delete attrs["title"];
     delete attrs["type"];
     delete attrs["date"];
+    delete attrs["startTime"];
+    delete attrs["endTime"];
 
     for (const key of <(keyof OFCEvent)[]>Object.keys(attrs)) {
         if (attrs[key] === undefined || attrs[key] === null) {
@@ -187,7 +199,7 @@ const makeListItem = (
 
     return `${whitespacePrefix}- ${
         checkbox || ""
-    } ${title} ${generateInlineAttributes(attrs)}`;
+    } ${title} ${timeStr ? " " + timeStr : ""} ${generateInlineAttributes(attrs)}`;
 };
 
 const modifyListItem = (line: string, data: OFCEvent): string | null => {
@@ -296,7 +308,12 @@ export default class DailyNoteCalendar extends EditableCalendar {
             );
             throw new Error("Cannot create a recurring event in a daily note.");
         }
-        const m = moment(event.date);
+        // Make default new event a task (checkbox unchecked)
+        const newEvent = { ...event };
+        if (newEvent.completed === undefined || newEvent.completed === null) {
+            newEvent.completed = false;
+        }
+        const m = moment(newEvent.date);
         let file = getDailyNote(m, getAllDailyNotes()) as TFile;
         if (!file) {
             file = (await createDailyNote(m)) as TFile;
@@ -314,7 +331,7 @@ export default class DailyNoteCalendar extends EditableCalendar {
         let lineNumber = await this.app.rewrite(file, (contents) => {
             const { page, lineNumber } = addToHeading(contents, {
                 heading: headingInfo,
-                item: event,
+                item: newEvent,
                 headingText: this.heading,
             });
             return [page, lineNumber] as [string, number];
@@ -348,7 +365,8 @@ export default class DailyNoteCalendar extends EditableCalendar {
     async modifyEvent(
         loc: EventPathLocation,
         newEvent: OFCEvent,
-        updateCacheWithLocation: (loc: EventLocation) => void
+        updateCacheWithLocation: (loc: EventLocation) => void,
+        newOrder?: number
     ): Promise<void> {
         console.debug("modified daily note event");
         if (newEvent.type !== "single" && newEvent.type !== undefined) {
@@ -362,51 +380,40 @@ export default class DailyNoteCalendar extends EditableCalendar {
             );
         }
         const { file, lineNumber } = this.getConcreteLocation(loc);
-        const oldDate = getDateFromFile(file as any, "day")?.format(
-            DATE_FORMAT
-        );
+        const oldDate = getDateFromFile(file as any, "day")?.format(DATE_FORMAT);
         if (!oldDate) {
-            throw new Error(
-                `Could not get date from file at path ${file.path}`
-            );
+            throw new Error(`Could not get date from file at path ${file.path}`);
         }
         if (newEvent.date !== oldDate) {
             // Event needs to be moved to a new file.
             console.debug("daily note event moving to a new file.");
-            // TODO: Factor this out with the createFile path.
             const m = moment(newEvent.date);
             let newFile = getDailyNote(m, getAllDailyNotes()) as TFile;
             if (!newFile) {
                 newFile = (await createDailyNote(m)) as TFile;
             }
             await this.app.read(newFile);
-
             const metadata = this.app.getMetadata(newFile);
             if (!metadata) {
                 throw new Error("No metadata for file " + file.path);
             }
             const headingInfo = metadata.headings?.find(
-                (h) => h.heading == this.heading
+                (h: any) => h.heading == this.heading
             );
             if (!headingInfo) {
                 throw new Error(
                     `Could not find heading ${this.heading} in daily note ${file.path}.`
                 );
             }
-
             await this.app.rewrite(file, async (oldFileContents) => {
-                // Open the old file and remove the event.
                 let lines = oldFileContents.split("\n");
                 lines.splice(lineNumber, 1);
                 await this.app.rewrite(newFile, (newFileContents) => {
-                    // Before writing that change back to disk, open the new file and add the event.
                     const { page, lineNumber } = addToHeading(newFileContents, {
                         heading: headingInfo,
                         item: newEvent,
                         headingText: this.heading,
                     });
-                    // Before any file changes are committed, call the updateCacheWithLocation callback to ensure
-                    // the cache is properly updated with the new location.
                     updateCacheWithLocation({ file: newFile, lineNumber });
                     return page;
                 });
@@ -414,14 +421,21 @@ export default class DailyNoteCalendar extends EditableCalendar {
             });
         } else {
             console.debug("daily note event staying in same file.");
-            updateCacheWithLocation({ file, lineNumber });
             await this.app.rewrite(file, (contents) => {
-                const lines = contents.split("\n");
+                let lines = contents.split("\n");
                 const newLine = modifyListItem(lines[lineNumber], newEvent);
                 if (!newLine) {
                     throw new Error("Did not successfully update line.");
                 }
-                lines[lineNumber] = newLine;
+                // If newOrder is provided, move the event to the new position
+                if (typeof newOrder === "number" && newOrder !== lineNumber) {
+                    const item = lines.splice(lineNumber, 1)[0];
+                    lines.splice(newOrder, 0, newLine);
+                    updateCacheWithLocation({ file, lineNumber: newOrder });
+                } else {
+                    lines[lineNumber] = newLine;
+                    updateCacheWithLocation({ file, lineNumber });
+                }
                 return lines.join("\n");
             });
         }
